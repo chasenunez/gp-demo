@@ -1,0 +1,202 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
+  <title>Gaussian Process Regression</title>
+  <link rel="stylesheet" href="http://maxcdn.bootstrapcdn.com/bootstrap/3.2.0/css/bootstrap.min.css">
+  <script src="http://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js"></script>
+  <script src="http://maxcdn.bootstrapcdn.com/bootstrap/3.2.0/js/bootstrap.min.js"></script>
+  <style>
+  </style>
+</head>
+<body>
+<div class="container" role="main">
+<div class="row">
+  <div class="col-md-12">
+  <h3>Gaussian Process Regression</h3>
+  <p>Click to add points</p>
+  <p>Log likelihood: <span id="logLikelihood"></span></p>
+  <div id="container">
+  <div id="plot" style="width: 100%; height: 70%; min-height: 350px;"></div>
+  <div class="row">
+  </div>
+  </div>
+  </div>
+</div>
+</div>
+<script src="js/linalg.core.js"></script>
+<script src="js/gp.js"></script>
+<script src="js/bfgs.js"></script>
+<script src="extern/dat.gui.min.js"></script>
+<script src="extern/jquery.flot.min.js"></script>
+<script src="extern/jquery.flot.fillbetween.min.js"></script>
+<script>
+
+var regressor;
+
+function updatePlot() {
+
+  if (regressor.N == 0) {
+
+    $.plot('#plot', [
+      {
+        data: [[0,0]],
+        lines: { show: true, lineWidth: 2, shadowSize: 0 },
+        color: '#33c'
+      },
+    ],
+      {
+        xaxis: { min: 0, max: 1 },
+        yaxis: { min: -1, max: 1 },
+        grid: { clickable: true }
+      }
+    );
+
+  } else {
+
+    // linspaced with regressor.x added and neighborhood points removed
+    var x_new = [ ]
+    for (var i = 0; i < regressor.x.length; ++i)
+      x_new.push(regressor.x[i]);
+    var linspaced = linspace(0, 1, 101);
+    for (var i = 0; i < linspaced.length; ++i) {
+      var mindist = 1;
+      var include = true;
+      for (var j = 0; j < regressor.x.length; ++j) {
+        if (Math.abs(regressor.x[j] - linspaced[i]) < 0.005) {
+          include = false;
+          break;
+        }
+      }
+      if (include) x_new.push(linspaced[i]);
+    }
+    x_new.sort();
+
+    var moments = regressor.getMoments(x_new);
+    var lower   = moments.mean.subtract(moments.variance.cwiseSqrt());
+    var upper   = moments.mean.add(moments.variance.cwiseSqrt());
+    var lower95 = moments.mean.subtract(moments.variance.cwiseSqrt().scale(2));
+    var upper95 = moments.mean.add(moments.variance.cwiseSqrt().scale(2));
+    var zip = function(x, y) {
+      var data = [ ];
+      for (var i = 0; i < x.length; i++)
+        data.push([x[i], y[i]]);
+      return data;
+    }
+
+    $.plot('#plot', [
+      {
+        label: "&nbsp;Data",
+        data: zip(regressor.x, regressor.y),
+        points: { show: true, fillColor: '#000' },
+        color: '#000',
+      },
+      {
+        id: 'lower',
+        data: zip(x_new, lower),
+        lines: { show: true, lineWidth: 0, fill: false },
+      },
+      {
+        label:'&nbsp;&plusmn;&sigma;',
+        id: 'upper',
+        data: zip(x_new, upper),
+        lines: { show: true, lineWidth: 0, fill: 0.15, shadowSize: 0 },
+        color: 'rgba(50,50,50,0.4)',
+        fillBetween: 'lower'
+      },
+      {
+        id: 'lower95',
+        data: zip(x_new, lower95),
+        lines: { show: true, lineWidth: 0, fill: false },
+      },
+      {
+        label:'&nbsp;&plusmn;2&sigma;',
+        id: 'upper95',
+        data: zip(x_new, upper95),
+        lines: { show: true, lineWidth: 0, fill: 0.15, shadowSize: 0 },
+        color: 'rgba(50,50,50,0.15)',
+        fillBetween: 'lower95'
+      },
+      {
+        label: "&nbsp;Mean",
+        data: zip(x_new, moments.mean),
+        lines: { show: true, lineWidth: 3, shadowSize: 0 },
+        color: '#dd66cc'
+      }
+    ],
+      {
+        xaxis: { min: 0, max: 1 },
+        yaxis: { min: -1, max: 1 },
+        grid: { clickable: true },
+        legend: { position: 'nw' }
+      }
+    );
+
+    var logLikelihood = regressor.logLikelihood(regressor.getHyperparams()) * 1000 | 0;
+    document.getElementById('logLikelihood').innerHTML = logLikelihood / 1000;
+
+
+  }
+
+};
+
+window.onload = function() {
+
+  regressor = new Regressor();
+  regressor.setKernel(GP.kernels[0].name);
+
+  $("#plot").bind("plotclick", function (event, pos, item) {
+    var x = [ ], y = [ ];
+    for (var i = 0; i < regressor.N; ++i) {
+      x.push(regressor.x[i]);
+      y.push(regressor.y[i]);
+    }
+    x.push(pos.x);
+    y.push(pos.y);
+    regressor.setData(x, y);
+    requestAnimationFrame(function() { updatePlot(); } );
+  });
+
+  gui = new dat.GUI();
+
+  function addHyperparamFolder() {
+    gui.removeFolder('Hyperparameters');
+    var folder = gui.addFolder('Hyperparameters');
+    for (var i = 0; i < regressor.kernel.hyperparams.length; ++i) {
+      var param = regressor.kernel.hyperparams[i];
+      folder.add(regressor.hyperparams, param.name, param.min, param.max).step(param.step).name(param.name).onChange(function(value) {
+        requestAnimationFrame(function() { updatePlot(); } );
+      });
+    }
+    folder.add(regressor, 'optimize').name('Optimize').onChange(function(value) {
+      for (var i in folder.__controllers)
+        folder.__controllers[i].updateDisplay();
+      requestAnimationFrame(function() { updatePlot(); } );
+    });
+    folder.add(regressor, 'reset').name('Reset').onChange(function(value) {      for (var i in folder.__controllers)
+        folder.__controllers[i].updateDisplay();
+      requestAnimationFrame(function() { updatePlot(); } );
+    });
+    folder.open();
+  };
+
+  var f0 = gui.addFolder('Options');
+  var kernelNames = [ ];
+  for (var i = 0; i < GP.kernels.length; ++i) {
+    kernelNames.push(GP.kernels[i].name);
+  }
+  f0.add(regressor, 'kernelName', kernelNames).name('Kernel').onChange(function(value) {
+    regressor.setKernel(value);
+    addHyperparamFolder();
+    requestAnimationFrame(function() { updatePlot(); } );
+  });
+  f0.open();
+
+  addHyperparamFolder();
+
+  updatePlot();
+
+};
+
+</script>
+</body>

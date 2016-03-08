@@ -7,6 +7,7 @@
   <script src="http://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js"></script>
   <script src="http://maxcdn.bootstrapcdn.com/bootstrap/3.2.0/js/bootstrap.min.js"></script>
   <style>
+  html, body, .container, .row, div.col-md-12, #container {height: 100%; }
   </style>
 </head>
 <body>
@@ -17,24 +18,54 @@
   <p>Click to add points</p>
   <p>Log likelihood: <span id="logLikelihood"></span></p>
   <div id="container">
-  <div id="plot" style="width: 100%; height: 70%; min-height: 350px;"></div>
+  <div id="plot" style="width: 100%; height: 70%; min-height: 450px;"></div>
   <div class="row">
   </div>
   </div>
   </div>
 </div>
 </div>
+<script src="js/dat.gui.min.js"></script>
 <script src="js/linalg.core.js"></script>
 <script src="js/gp.js"></script>
 <script src="js/bfgs.js"></script>
-<script src="extern/dat.gui.min.js"></script>
 <script src="extern/jquery.flot.min.js"></script>
 <script src="extern/jquery.flot.fillbetween.min.js"></script>
 <script>
 
 var regressor;
 
-function updatePlot() {
+
+    // linspaced with regressor.x added and neighborhood points removed
+var getXNew = function() {
+  var x_new = [ ]
+  for (var i = 0; i < regressor.x.length; ++i)
+    x_new.push(regressor.x[i]);
+  var linspaced = linspace(0, 1, 100);
+  for (var i = 0; i < linspaced.length; ++i) {
+    var mindist = 1;
+    var include = true;
+    for (var j = 0; j < regressor.x.length; ++j) {
+      if (Math.abs(regressor.x[j] - linspaced[i]) < 0.005) {
+        include = false;
+        break;
+      }
+    }
+    if (include) x_new.push(linspaced[i]);
+  }
+  x_new.sort();
+  return x_new;
+}
+
+var app = {
+  getSamples:  function() {
+    var x_new = getXNew();
+    var samples = regressor.getRealizations(x_new);
+    updatePlot(samples);
+  }
+}
+
+function updatePlot(samples) {
 
   if (regressor.N == 0) {
 
@@ -53,25 +84,7 @@ function updatePlot() {
     );
 
   } else {
-
-    // linspaced with regressor.x added and neighborhood points removed
-    var x_new = [ ]
-    for (var i = 0; i < regressor.x.length; ++i)
-      x_new.push(regressor.x[i]);
-    var linspaced = linspace(0, 1, 101);
-    for (var i = 0; i < linspaced.length; ++i) {
-      var mindist = 1;
-      var include = true;
-      for (var j = 0; j < regressor.x.length; ++j) {
-        if (Math.abs(regressor.x[j] - linspaced[i]) < 0.005) {
-          include = false;
-          break;
-        }
-      }
-      if (include) x_new.push(linspaced[i]);
-    }
-    x_new.sort();
-
+    var x_new = getXNew();
     var moments = regressor.getMoments(x_new);
     var lower   = moments.mean.subtract(moments.variance.cwiseSqrt());
     var upper   = moments.mean.add(moments.variance.cwiseSqrt());
@@ -84,7 +97,7 @@ function updatePlot() {
       return data;
     }
 
-    $.plot('#plot', [
+    trends = [
       {
         label: "&nbsp;Data",
         data: zip(regressor.x, regressor.y),
@@ -123,7 +136,20 @@ function updatePlot() {
         lines: { show: true, lineWidth: 3, shadowSize: 0 },
         color: '#dd66cc'
       }
-    ],
+    ];
+
+    if (samples) {
+      for (var i = 0; i < samples.length; ++i) {
+        var trend = {
+          data: zip(x_new, samples[i]),
+          lines: { show: true, lineWidth: 1, shadowSize: 0 },
+          color: '#'+Math.floor(Math.random()*16777215).toString(16)
+        };
+        trends.push(trend);
+      }
+    }
+
+    $.plot('#plot', trends,
       {
         xaxis: { min: 0, max: 1 },
         yaxis: { min: -1, max: 1 },
@@ -173,7 +199,11 @@ window.onload = function() {
         folder.__controllers[i].updateDisplay();
       requestAnimationFrame(function() { updatePlot(); } );
     });
-    folder.add(regressor, 'reset').name('Reset').onChange(function(value) {      for (var i in folder.__controllers)
+    folder.add(app, 'getSamples').name('Draw samples').onChange(function(value) {
+
+    });
+    folder.add(regressor, 'reset').name('Reset').onChange(function(value) {
+      for (var i in folder.__controllers)
         folder.__controllers[i].updateDisplay();
       requestAnimationFrame(function() { updatePlot(); } );
     });

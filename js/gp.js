@@ -52,9 +52,10 @@ Regressor.prototype.setData = function(x, y) {
 
 Regressor.prototype.reset = function() {
   this.N = 0;
+  this.evals = 0;
 };
 
-Regressor.prototype.computeSigmaInplace = function(Sigma, theta) {
+Regressor.prototype.getSigmaInplace = function(Sigma, theta) {
   for (var i = 0; i < this.N; ++i) {
     for (var j = i; j < this.N; ++j) {
       Sigma[i * this.N + j] = this.kernel.eval(this.x[i], this.x[j], theta);
@@ -64,9 +65,9 @@ Regressor.prototype.computeSigmaInplace = function(Sigma, theta) {
   return Sigma;
 };
 
-Regressor.prototype.computeSigma = function(theta) {
+Regressor.prototype.getSigma = function(theta) {
   var Sigma = zeros(this.N, this.N);
-  return this.computeSigmaInplace(Sigma, theta);
+  return this.getSigmaInplace(Sigma, theta);
 };
 
 Regressor.prototype.getHyperparams = function() {
@@ -91,7 +92,7 @@ Regressor.prototype.getMoments = function(x_new) {
       K_new[i * this.N + j] = this.kernel.eval(x_new[i], this.x[j] + 1e-10, theta); // avoid adding dij
     }
   }
-  var L = this.computeSigma(theta).chol_inplace();
+  var L = this.getSigma(theta).chol_inplace();
   var mean = K_new.multiply(L.bsolve(L.fsolve(this.y), {transpose: true}));
   var variance = zeros(x_new.length);
   for (var i = 0; i < x_new.length; ++i) {
@@ -101,14 +102,60 @@ Regressor.prototype.getMoments = function(x_new) {
 };
 
 Regressor.prototype.logLikelihood = function(theta) {
-  var L = this.computeSigma(theta).chol_inplace();
+  this.evals++;
+  var L = this.getSigma(theta).chol_inplace();
   var logdet = L.diagonal().map(Math.log).sum();
   return -0.5 * this.N * Math.log(2 * Math.PI) - logdet - 0.5 * Math.pow(L.fsolve(this.y).norm(), 2);
 };
 
+Regressor.prototype.getRealizations = function(xstar) {
+  var theta = this.getHyperparams();
+  var KstarT = zeros(xstar.length, this.N);
+  for (var i = 0; i < xstar.length; ++i) {
+    for (var j = 0; j < this.N; ++j) {
+      KstarT[i * this.N + j] = this.kernel.eval(xstar[i], this.x[j] + 1e-10, theta); // avoid adding dij
+    }
+  }
+  var L = this.getSigma(theta).chol_inplace();
+  var mean = KstarT.multiply(L.bsolve(L.fsolve(this.y), {transpose: true}));
+  var covar = zeros(xstar.length, xstar.length);
+  for (var i = 0; i < xstar.length; ++i) {
+    for (var j = 0; j <  xstar.length; ++j) {
+      covar[i * xstar.length + j] = this.kernel.eval(xstar[i], xstar[j] + 1e-10, theta);
+    }
+  }
+  covar.increment(eye(xstar.length, xstar.length).scale(1e-8));
+  var Kstar = KstarT.transpose();
+  var KinvKstar = zeros(this.N, xstar.length);
+  for (var j = 0; j < xstar.length; ++j) {
+    KinvKstar.setCol(j, L.bsolve(L.fsolve(Kstar.col(j)), {transpose: true}));
+  }
+  covar = covar.subtract(KstarT.multiply(KinvKstar));
+  var L = covar.chol();
+
+  var getNormal = function() {
+    var x, y, w;
+    do {
+      x = Math.random() * 2 - 1;
+      y = Math.random() * 2 - 1;
+      w = x * x + y * y;
+    } while (w >= 1.0)
+    return x * Math.sqrt(-2 * Math.log(w) / w);
+  };
+
+  var realizations = [ ];
+  for (var i = 0; i < 5; ++i) {
+    var z = Float64Array.build(getNormal, xstar.length, 1);
+    realizations.push(mean.add(L.multiply(z)));
+  }
+  self.realizations = realizations;
+  return realizations;
+};
+
+// Evaluate gradient w.r.t theta using forward difference
 Regressor.prototype.gradientFD = function(theta) {
   var n = this.kernel.hyperparams.length;
-  var h = 1e-8;
+  var h = 1e-6;
   var delta = eye(n).scale(h);
   var logLikelihood = this.logLikelihood(theta);
   var grad = zeros(n);
@@ -118,37 +165,35 @@ Regressor.prototype.gradientFD = function(theta) {
   return grad.scale(-1);
 };
 
-Regressor.prototype.gradient = function(theta) {
-  var Sigma = this.computeSigma(theta);
-  var dSigma = [ ];
-  for (var k = 0; k < this.kernel.hyperparams.length; ++k) {
-    dSigma.push(zeros(this.N, this.N));
-  }
-  for (var i = 0; i < this.N; ++i) {
-    for (var j = i; j < this.N; ++j) {
-      var grad = this.kernel.grad(this.x[i], this.x[j], theta);
-      for (var k = 0; k < this.kernel.hyperparams.length; ++k) {
-        dSigma[k][i * this.N + j] = grad[k];
-        dSigma[k][j * this.N + i] = dSigma[k][i * this.N + j];
-      }
-    }
-  }
-  var grad = zeros(this.kernel.hyperparams.length);
-  var L = Sigma.chol_inplace();
-  for (var k = 0; k < this.kernel.hyperparams.length; ++k) {
-    var prod = zeros(this.N, this.N);
-    for (var j = 0; j < this.N; ++j) {
-      prod.setCol(j, L.bsolve(L.fsolve(dSigma[k].col(j)), {transpose: true}));
-    }
-    grad[k] = 0.5 * prod.trace() + 0.5 * this.y.dot(dSigma[k].multiply(L.bsolve(L.fsolve(dSigma[k].multiply(this.y)), {transpose: true})));
-  }
-  return grad;
-};
-
+// Multistart BFGS
 Regressor.prototype.optimize = function() {
+  this.evals = 0;
   var theta = this.getHyperparams();
   var self = this;
-  var proposal = BFGS(function(theta) { return self.gradientFD(theta); }, theta, 100);
-  this.setHyperparams(proposal);
+  var proposals = [theta];
+  for (var i = 0; i < 10; ++i) {
+    var random_proposl = Float64Array.build(function(i) {
+      return Math.random() * (self.kernel.hyperparams[i].max - self.kernel.hyperparams[i].min) + self.kernel.hyperparams[i].min;
+    }, self.kernel.hyperparams.length);
+    proposals.push(random_proposl);
+  }
+  var bestProposal = proposals[0].copy();
+  var bestProposalValue = self.logLikelihood(bestProposal);
+  for (var i = 0; i < proposals.length; ++i) {
+    var proposal = proposals[i].copy();
+    for (var j = 0; j < 5; ++j) {
+      var result = BFGS(function(x) { return self.gradientFD(x); }, proposal, 10);
+      proposal = result.optimum;
+      if (result.errors.length > 0)
+        break;
+    }
+    var value = self.logLikelihood(proposal);
+    if (value > bestProposalValue) {
+      bestProposalValue = value;
+      bestProposal = proposal.copy();
+    }
+  }
+  console.log(this.evals);
+  this.setHyperparams(bestProposal);
   return proposal;
 };
